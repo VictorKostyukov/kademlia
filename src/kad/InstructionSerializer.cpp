@@ -35,14 +35,16 @@
 #include "protocol/FindValueResponse.h"
 #include "protocol/Query.h"
 #include "protocol/QueryResponse.h"
+#include "protocol/StoreLog.h"
+#include "protocol/StoreLogResponse.h"
+#include "protocol/QueryLog.h"
+#include "protocol/QueryLogResponse.h"
 
-#include "IOutputStream.h"
-#include "IInputStream.h"
-#include "InstructionSerializer.h"
+#include <drive/kad/InstructionSerializer.h>
 
 namespace kad
 {
-  bool InstructionSerializer::Serialize(IOutputStream & output, const Instruction * instr)
+  bool InstructionSerializer::Serialize(bdfs::IOutputStream & output, const Instruction * instr)
   {
     if (!instr)
     {
@@ -53,7 +55,7 @@ namespace kad
   }
 
 
-  Instruction * InstructionSerializer::Deserialize(IInputStream & input)
+  Instruction * InstructionSerializer::Deserialize(bdfs::IInputStream & input)
   {
     if (input.Remainder() < sizeof(uint16_t))
     {
@@ -90,6 +92,10 @@ namespace kad
       case OpCode::FIND_VALUE_RESPONSE: return new protocol::FindValueResponse();
       case OpCode::QUERY:               return new protocol::Query();
       case OpCode::QUERY_RESPONSE:      return new protocol::QueryResponse();
+      case OpCode::STORE_LOG:           return new protocol::StoreLog();
+      case OpCode::STORE_LOG_RESPONSE:  return new protocol::StoreLogResponse();
+      case OpCode::QUERY_LOG:           return new protocol::QueryLog();
+      case OpCode::QUERY_LOG_RESPONSE:  return new protocol::QueryLogResponse();
 
       default:                          return nullptr;
     }

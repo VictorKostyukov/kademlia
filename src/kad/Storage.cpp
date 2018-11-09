@@ -39,9 +39,10 @@
 #include <sys/stat.h>
 #include <limits>
 #include <json/json.h>
-#include "Config.h"
-#include "IndexQuery.h"
-#include "Storage.h"
+#include <drive/kad/Config.h>
+#include <drive/kad/IndexQuery.h>
+#include <drive/kad/Storage.h>
+#include <drive/kad/Digest.h>
 
 
 namespace kad
@@ -50,6 +51,7 @@ namespace kad
 
   Storage * Storage::cache = nullptr;
 
+  Storage * Storage::log = nullptr;
 
   Storage * Storage::Persist()
   {
@@ -61,7 +63,6 @@ namespace kad
     return persist;
   }
 
-
   Storage * Storage::Cache()
   {
     if (unlikely(cache == nullptr))
@@ -70,6 +71,16 @@ namespace kad
     }
 
     return cache;
+  }
+
+  Storage * Storage::Log()
+  {
+    if (unlikely(log == nullptr))
+    {
+      log = new Storage(Storage::Mkdir(_T("log")));
+    }
+
+    return log;
   }
 
 
@@ -301,6 +312,110 @@ namespace kad
     return result;
   }
 
+  bool Storage::SaveLog(KeyPtr key, uint64_t version, BufferPtr content, int64_t ttl)
+  {
+    if (!key || !content || !content->Data() || content->Size() == 0)
+    {
+      return false;
+    }
+
+    Json::Value json;
+    Json::Reader reader;
+    if (!reader.parse((char*)content->Data(), content->Size(), json, false))
+    {
+      return false;
+    }
+
+    if (json.isObject())
+    {
+      this->UpdateTTL(key, ttl);
+      this->UpdateTimestamp(key, get_now());
+
+      int64_t expiration;
+      if (!this->GetExpiration(key, &expiration))
+      {
+        return false;
+      }
+
+      std::string keyStr;
+      auto timestamp = std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::system_clock::now()).time_since_epoch().count();
+      keyStr = json["type"].asString() + ":" + json["name"].asString() + ":" + std::to_string(timestamp);
+
+      sha1_t digest;
+      Digest::Compute(keyStr.c_str(), keyStr.size(), digest);
+      KeyPtr fileKey = std::make_shared<Key>(digest);
+
+      FILE * file = _tfopen(this->GetFileName(fileKey, 0, expiration).c_str(), _T("wb"));
+
+      if (!file)
+      {
+        return false;
+      }
+
+      bool result = false;
+
+      if (content->Size() > 0)
+      {
+        result = fwrite(content->Data(), 1, content->Size(), file) == content->Size();
+      }
+
+      fclose(file);
+
+      return result;
+    }
+    else if (json.isArray())
+    {
+      for (Json::Value::ArrayIndex i = 0; i != json.size(); i++)
+      {
+        if (json[i].isObject())
+        {
+          KeyPtr fileKey = std::make_shared<Key>();
+          std::string key = json[i]["_key"].asString();
+          fileKey->FromString(key.c_str());
+
+          int64_t expiration = json[i]["_expiration"].asInt();
+          int64_t fileNameExpiration = expiration - std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::system_clock::now()).time_since_epoch().count() + get_now();
+
+          std::string fileName = this->GetFileName(fileKey, 0, fileNameExpiration);
+
+          struct stat stat_buf;
+          if (_tstat(fileName.c_str(), &stat_buf) == 0)
+          {
+            continue;
+          }
+
+          FILE * file = _tfopen(fileName.c_str(), _T("wb"));
+          if (!file)
+          {
+            return false;
+          }
+
+          json[i].removeMember("_key");
+          json[i].removeMember("_version");
+          json[i].removeMember("_expiration");
+
+          Json::FastWriter writer;
+          auto jsonStr = writer.write(json[i]);
+
+          bool ok;
+          ok = fwrite((uint8_t*)jsonStr.c_str(), 1, jsonStr.size(), file) == jsonStr.size();
+
+          fclose(file);
+
+          if (!ok)
+          {
+            return false;
+          }
+        }
+        else
+        {
+          return false;
+        }
+      }
+      return true;
+    }
+    return false;
+  }
 
   BufferPtr Storage::MatchQuery(std::string queryStr) const
   {
@@ -352,6 +467,10 @@ namespace kad
 
                 target["_expiration"] = Json::Int(timestamp);
                 target["_version"] = Json::UInt(version);
+                if (target["type"].asString().find("log:") != std::string::npos)
+                {
+                  target["_key"] = Json::Value(keyname);
+                }
                 arr.append(target);
               }
             }

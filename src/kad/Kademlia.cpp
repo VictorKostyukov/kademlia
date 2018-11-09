@@ -27,23 +27,26 @@
 
 #include <assert.h>
 #include "protocol/Protocol.h"
-#include "EventLoop.h"
-#include "KBuckets.h"
-#include "Thread.h"
-#include "PackageDispatcher.h"
-#include "FindNodeAction.h"
-#include "FindValueAction.h"
-#include "QueryAction.h"
-#include "StoreAction.h"
-#include "PingAction.h"
-#include "Storage.h"
-#include "Config.h"
-#include "Timer.h"
-#include "Kademlia.h"
+#include <drive/kad/EventLoop.h>
+#include <drive/kad/KBuckets.h>
+#include <drive/kad/Thread.h>
+#include <drive/kad/PackageDispatcher.h>
+#include <drive/kad/FindNodeAction.h>
+#include <drive/kad/FindValueAction.h>
+#include <drive/kad/QueryAction.h>
+#include <drive/kad/StoreAction.h>
+#include <drive/kad/QueryLogAction.h>
+#include <drive/kad/StoreLogAction.h>
+#include <drive/kad/PingAction.h>
+#include <drive/kad/Storage.h>
+#include <drive/kad/Config.h>
+#include <drive/kad/Timer.h>
+#include <drive/kad/Kademlia.h>
 
 #include <fstream>
 #include <json/json.h>
 #include <arpa/inet.h>
+
 
 namespace kad
 {
@@ -67,7 +70,7 @@ namespace kad
 
   Kademlia::~Kademlia()
   {
-    //this->SaveBuckets();
+    this->SaveBuckets();
   }
 
 
@@ -83,6 +86,7 @@ namespace kad
 
     Storage::Persist()->Initialize(true);
     Storage::Cache()->Initialize(false);
+    Storage::Log()->Initialize(true);
 
     std::vector<std::pair<KeyPtr, ContactPtr>> nodes;
 
@@ -225,7 +229,7 @@ namespace kad
 
       this->OnReplicate(targets, 0);
 
-      //SaveBuckets();
+      SaveBuckets();
     }
   }
 
@@ -549,6 +553,116 @@ namespace kad
   }
 
 
+  void Kademlia::QueryLogs(KeyPtr target, std::string query, uint32_t limit, AsyncResultPtr result, CompleteHandler handler)
+  {
+    THREAD_ENSURE(this->thread.get(), QueryLogs, target, query, limit, result, handler);
+
+    if (!this->ready)
+    {
+      return;
+    }
+
+    std::vector<std::pair<KeyPtr, ContactPtr>> nodes;
+    this->kBuckets->FindClosestContacts(target, nodes);
+
+    bool searchLocal = false;
+
+    if (nodes.size() > 0)
+    {
+      Key localDistance = target->GetDistance(*Config::NodeId());
+      Key closestDistance = target->GetDistance(*(nodes[0]).first);
+
+      searchLocal = localDistance <= closestDistance;
+    }
+    else
+    {
+      searchLocal = true;
+    }
+
+    if (searchLocal)
+    {
+      auto storage = Storage::Log();
+      auto buffer = storage->MatchQuery(query);
+      if (buffer)
+      {
+        auto rtn = dynamic_cast<AsyncResult<BufferPtr> *>(result.get());
+        if (rtn)
+        {
+          rtn->Complete(buffer);
+        }
+        else if (result)
+        {
+          result->Complete();
+        }
+
+        if (handler)
+        {
+          handler(result);
+        }
+
+        return;
+      }
+    }
+
+    auto action = std::unique_ptr<QueryLogAction>(new QueryLogAction(this->thread.get(), this->dispatcher.get()));
+
+    action->Initialize(target, query, nodes);
+
+    action->SetOnCompleteHandler(
+      [this, target, result, handler](void * _sender, void * _args)
+      {
+        auto action = reinterpret_cast<QueryLogAction *>(_args);
+
+        auto rtn = dynamic_cast<AsyncResult<BufferPtr> *>(result.get());
+
+        auto buffer = action->GetResult();
+
+        if (rtn)
+        {
+          rtn->Complete(buffer);
+        }
+        else if (result)
+        {
+          result->Complete();
+        }
+
+        if (buffer)
+        {
+          std::pair<KeyPtr, ContactPtr> missed;
+
+          if (action->GetMissedNode(missed))
+          {
+            std::vector<std::pair<KeyPtr, ContactPtr>> nodes;
+
+            nodes.emplace_back(std::move(missed));
+
+            auto store = std::unique_ptr<StoreLogAction>(new StoreLogAction(this->thread.get(), this->dispatcher.get()));
+
+            store->Initialize(nodes, target, 0, buffer, 0, false);
+
+            if (store->Start())
+            {
+              store.release();
+            }
+
+          }
+        }
+
+        if (handler)
+        {
+          handler(result);
+        }
+      },
+      this
+    );
+
+    if (action->Start())
+    {
+      action.release();
+    }
+  }
+
+
   void Kademlia::Store(KeyPtr hash, BufferPtr data, uint32_t ttl, uint64_t version, AsyncResultPtr result, CompleteHandler handler)
   {
     THREAD_ENSURE(this->thread.get(), Store, hash, data, ttl, version, result, handler);
@@ -656,6 +770,66 @@ namespace kad
           [hash, complete](void * sender, void * args)
           {
             auto action = reinterpret_cast<StoreAction *>(args);
+
+            complete(action->GetResult());
+          },
+          this
+        );
+
+        if (action->Start())
+        {
+          action.release();
+        }
+      }
+    );
+  }
+
+  void Kademlia::StoreLog(KeyPtr hash, BufferPtr data, uint32_t ttl, uint64_t version, AsyncResultPtr result, CompleteHandler handler)
+  {
+    THREAD_ENSURE(this->thread.get(), StoreLog, hash, data, ttl, version, result, handler);
+
+    if (!this->ready)
+    {
+      return;
+    }
+
+    this->FindNode(hash, AsyncResultPtr(new AsyncResult<std::vector<std::pair<KeyPtr, ContactPtr>>>()),
+      [this, hash, data, ttl, version, result, handler](AsyncResultPtr rtn)
+      {
+        const auto & nodes = AsyncResultHelper::GetResult<std::vector<std::pair<KeyPtr, ContactPtr>>>(rtn.get());
+
+        auto complete = [result, handler](bool val)
+        {
+          auto storeResult = dynamic_cast<AsyncResult<bool> *>(result.get());
+          if (storeResult)
+          {
+            storeResult->Complete(val);
+          }
+          else if (result)
+          {
+            result->Complete();
+          }
+
+          if (handler)
+          {
+            handler(result);
+          }
+        };
+
+        if (nodes.empty())
+        {
+          complete(false);
+          return;
+        }
+
+        auto action = std::unique_ptr<StoreLogAction>(new StoreLogAction(this->thread.get(), this->dispatcher.get()));
+
+        action->Initialize(nodes, hash, version, data, ttl, true);
+
+        action->SetOnCompleteHandler(
+          [hash, complete](void * sender, void * args)
+          {
+            auto action = reinterpret_cast<StoreLogAction *>(args);
 
             complete(action->GetResult());
           },
@@ -823,9 +997,21 @@ namespace kad
         break;
       }
 
+      case OpCode::QUERY_LOG:
+      {
+        this->OnRequestQueryLog(from, request);
+        break;
+      }
+
       case OpCode::STORE:
       {
         this->OnRequestStore(from, request);
+        break;
+      }
+
+      case OpCode::STORE_LOG:
+      {
+        this->OnRequestStoreLog(from, request);
         break;
       }
 
@@ -932,8 +1118,11 @@ namespace kad
       }
     }
 
-    uint64_t version = 1;
-    int64_t ttl = 864000;
+    uint64_t version;
+    int64_t ttl;
+
+    storage->GetVersion(reqInstr->Key(), &version);
+    storage->GetTTL(reqInstr->Key(), &ttl);
 
     if (buffer)
     {
@@ -947,6 +1136,36 @@ namespace kad
     }
 
     if (!completed)
+    {
+      this->OnRequestFindNode(from, request);
+    }
+  }
+
+
+  void Kademlia::OnRequestQueryLog(ContactPtr from, PackagePtr request)
+  {
+    protocol::Query * reqInstr = static_cast<protocol::Query *>(request->GetInstruction());
+
+    auto storage = Storage::Log();
+    auto buffer = storage->MatchQuery(reqInstr->query);
+
+    uint64_t version;
+    int64_t ttl;
+
+    storage->GetVersion(reqInstr->Key(), &version);
+    storage->GetTTL(reqInstr->Key(), &ttl);
+
+    if (buffer)
+    {
+      protocol::QueryLogResponse * resInstr = new protocol::QueryLogResponse();
+
+      resInstr->SetData(buffer);
+      resInstr->SetVersion(version);
+      resInstr->SetTTL(ttl);
+
+      this->dispatcher->Send(std::make_shared<Package>(Package::PackageType::Response, Config::NodeId(), request->Id(), from, std::unique_ptr<Instruction>(resInstr)));
+    }
+    else
     {
       this->OnRequestFindNode(from, request);
     }
@@ -972,6 +1191,27 @@ namespace kad
     }
 
     protocol::StoreResponse * resInstr = new protocol::StoreResponse();
+
+    resInstr->SetResult(code);
+
+    this->dispatcher->Send(std::make_shared<Package>(Package::PackageType::Response, Config::NodeId(), request->Id(), from, std::unique_ptr<Instruction>(resInstr)));
+  }
+
+
+  void Kademlia::OnRequestStoreLog(ContactPtr from, PackagePtr request)
+  {
+    protocol::StoreLog * reqInstr = static_cast<protocol::StoreLog *>(request->GetInstruction());
+
+    auto storage = Storage::Log();
+
+    auto code = protocol::StoreLogResponse::ErrorCode::SUCCESS;
+
+    if (!storage->SaveLog(reqInstr->GetKey(), reqInstr->Version(), reqInstr->Data(), reqInstr->TTL()))
+    {
+      code = protocol::StoreLogResponse::ErrorCode::FAILED;
+    }
+
+    protocol::StoreLogResponse * resInstr = new protocol::StoreLogResponse();
 
     resInstr->SetResult(code);
 

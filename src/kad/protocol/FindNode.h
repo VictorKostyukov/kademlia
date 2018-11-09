@@ -27,8 +27,8 @@
 
 #pragma once
 
-#include "Key.h"
-#include "Instruction.h"
+#include <drive/kad/Key.h>
+#include <drive/kad/Instruction.h>
 
 namespace kad
 {
@@ -42,9 +42,9 @@ namespace kad
 
       ~FindNode() override = default;
 
-      bool Serialize(IOutputStream & output) const override;
+      bool Serialize(bdfs::IOutputStream & output) const override;
 
-      bool Deserialize(IInputStream & input) override;
+      bool Deserialize(bdfs::IInputStream & input) override;
 
       void Print() const override;
 

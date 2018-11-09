@@ -38,3 +38,7 @@
 #include "protocol/QueryResponse.h"
 #include "protocol/Store.h"
 #include "protocol/StoreResponse.h"
+#include "protocol/StoreLog.h"
+#include "protocol/StoreLogResponse.h"
+#include "protocol/QueryLog.h"
+#include "protocol/QueryLogResponse.h"

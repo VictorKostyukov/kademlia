@@ -28,9 +28,9 @@
 #pragma once
 
 #include <stdint.h>
-#include "Key.h"
-#include "Buffer.h"
-#include "Instruction.h"
+#include <drive/kad/Key.h>
+#include <drive/kad/Buffer.h>
+#include <drive/kad/Instruction.h>
 
 namespace kad
 {
@@ -42,9 +42,9 @@ namespace kad
 
       Store();
 
-      bool Serialize(IOutputStream & output) const override;
+      bool Serialize(bdfs::IOutputStream & output) const override;
 
-      bool Deserialize(IInputStream & input) override;
+      bool Deserialize(bdfs::IInputStream & input) override;
 
       void Print() const override;
 

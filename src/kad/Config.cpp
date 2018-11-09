@@ -27,7 +27,7 @@
 
 #include <ctime>
 #include <cstdlib>
-#include "Config.h"
+#include <drive/kad/Config.h>
 
 namespace kad
 {
@@ -48,6 +48,12 @@ namespace kad
   uint32_t Config::replicateTTL = 3600;
 
   int Config::refreshTimerInterval = 5 * 60 * 1000;
+
+  uint32_t Config::connectTimeout = 5;
+
+  uint32_t Config::sendTimeout = 5;
+
+  uint32_t Config::recvTimeout = 5;
 
 
   void Config::Initialize(TSTRING rootPath, TSTRING defcontPath)

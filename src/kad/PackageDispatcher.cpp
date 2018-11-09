@@ -1,19 +1,19 @@
 /**
  *
  * MIT License
- * 
+ *
  * Copyright (c) 2018 drvcoin
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -21,18 +21,18 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * =============================================================================
  */
 
 #include <tuple>
 #include <vector>
-#include "BufferedOutputStream.h"
-#include "BufferedInputStream.h"
-#include "TransportFactory.h"
-#include "Timer.h"
-#include "Config.h"
-#include "PackageDispatcher.h"
+#include <drive/common/BufferedOutputStream.h>
+#include <drive/common/BufferedInputStream.h>
+#include <drive/kad/TransportFactory.h>
+#include <drive/kad/Timer.h>
+#include <drive/kad/Config.h>
+#include <drive/kad/PackageDispatcher.h>
 
 namespace kad
 {
@@ -106,6 +106,8 @@ namespace kad
     PackageDispatcher * _this = reinterpret_cast<PackageDispatcher *>(sender);
     Subscription * subscription = reinterpret_cast<Subscription *>(args);
 
+    bool managed = false;
+
     if (subscription->request->Type() == Package::PackageType::Request && (subscription->handler || subscription->timeout > 0))
     {
       SubscriptionId id;
@@ -113,6 +115,7 @@ namespace kad
       id.requestId = subscription->request->Id();
 
       _this->subscriptions[id] = subscription;
+      managed = true;
 
       if (subscription->timeout > 0)
       {
@@ -135,10 +138,15 @@ namespace kad
     }
 #endif
 
-    BufferedOutputStream buffer;
+    bdfs::BufferedOutputStream buffer;
     if (subscription->request->Serialize(buffer))
     {
       _this->transport->Send(subscription->request->Target(), buffer.Buffer(), buffer.Offset());
+    }
+
+    if (!managed && subscription)
+    {
+      delete subscription;
     }
   }
 
@@ -154,7 +162,7 @@ namespace kad
 
     delete info;
 
-    BufferedInputStream input(buffer, size);
+    bdfs::BufferedInputStream input(buffer, size);
     PackagePtr package = Package::Deserialize(contact, input);
     delete[] buffer;
 
@@ -228,7 +236,7 @@ namespace kad
 
     auto now = std::chrono::steady_clock::now();
 
-    std::vector<TimePoint> expired;    
+    std::vector<TimePoint> expired;
 
     for (const auto & item : _this->expires)
     {
